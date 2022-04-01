@@ -18,6 +18,41 @@ resource "aws_key_pair" "kmg" {
   public_key = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC4pcIPJ3wfR3XDPKWxuII1ma4JFZOL3hTAJKPZtCIAS1upxLCiZ3kajiizMY1CVV49mSkTBTMaVCZANmxUgxomS6p9QNM8+H0AozGyb7rrbV7mgSjomtpgG/MxoIRDYR1jIRc106HW9EtecMpEZvoySvnPaFR4vApFvXrwXCmWnT9/MvT+VOlbjAnO4Y8ABV0CTseolcXD7rkS2wt1zw+oxEfV2fa0ChD7foJOO5fVbag8sVOGZYmXPHmSHscXn1do7jiAthhG5uF+GGdxOS2va930gOCBMlab6UvAU8z9t7HsEnMGOPpWi/npzTrRK3hyfsIR2wLPLnjj+2MXoaVT kmg@kmg11.nyc.corp.google.com"
 }
 
+resource "aws_route53_zone" "kaf" {
+  name = "kiwiairforce.com."
+}
+
+resource "aws_route53_zone" "kaf_enclave" {
+  name = "enclave.kiwiairforce.com"
+  tags = {
+    Name = "NitroHttpServerTest"
+  }
+}
+
+resource "aws_route53_record" "kaf_enclave_ns" {
+  zone_id = aws_route53_zone.kaf.zone_id
+  name    = "enclave.kiwiairforce.com"
+  type    = "NS"
+  ttl     = "30"
+  records = aws_route53_zone.kaf_enclave.name_servers
+}
+
+resource "aws_route53_record" "kaf_enclave_a" {
+  zone_id = aws_route53_zone.kaf_enclave.zone_id
+  name    = "enclave.kiwiairforce.com"
+  type    = "A"
+  ttl     = "30"
+  records = [aws_instance.nitro_server.public_ip]
+}
+
+resource "aws_route53_record" "kaf_enclave_builder_a" {
+  zone_id = aws_route53_zone.kaf_enclave.zone_id
+  name    = "builder.enclave.kiwiairforce.com"
+  type    = "A"
+  ttl     = "30"
+  records = [aws_instance.builder.public_ip]
+}
+
 resource "aws_ecr_repository" "nitro_test_repository" {
   name = "nitro_test_server"
 }
@@ -77,6 +112,12 @@ resource "aws_default_security_group" "nitro_server_sg" {
     protocol        = "tcp"
     cidr_blocks     = ["0.0.0.0/0"]
   }
+  ingress {
+    from_port       = 443
+    to_port         = 443
+    protocol        = "tcp"
+    cidr_blocks     = ["0.0.0.0/0"]
+  }
   egress {
     from_port       = 0
     to_port         = 65535
@@ -88,6 +129,11 @@ resource "aws_default_security_group" "nitro_server_sg" {
 
 data "template_file" "nitro_server" {
   template = file("${path.module}/nitro_startup.sh")
+  vars = {}
+}
+
+data "template_file" "builder" {
+  template = file("${path.module}/builder_startup.sh")
   vars = {}
 }
 
@@ -117,6 +163,7 @@ resource "aws_iam_policy" "nitro_ec2_role_policy" {
       {
         Action = [
           "ecr:*",
+          "s3:*",
         ]
         Effect   = "Allow"
         Resource = "*"
@@ -149,5 +196,21 @@ resource "aws_instance" "nitro_server" {
   iam_instance_profile = aws_iam_instance_profile.nitro_server_profile.name
   tags = {
     Name = "NitroHttpServerTest-server"
+  }
+}
+
+resource "aws_instance" "builder" {
+  ami = "ami-0c02fb55956c7d316"
+  instance_type = "c5.xlarge"
+  user_data = data.template_file.builder.rendered
+  enclave_options {
+    enabled = true
+  }
+  associate_public_ip_address = true
+  subnet_id = aws_subnet.nitro_pub_subnet.id
+  key_name = aws_key_pair.kmg.id
+  iam_instance_profile = aws_iam_instance_profile.nitro_server_profile.name
+  tags = {
+    Name = "EnclaveBuilder"
   }
 }
